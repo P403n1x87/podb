@@ -4,9 +4,8 @@ import linecache
 import os
 import runpy
 import sys
-from types import CodeType, FunctionType
+from types import CodeType
 
-from bytecode import ConcreteBytecode, Instr
 from rich import print
 from rich.columns import Columns
 from rich.panel import Panel
@@ -28,33 +27,24 @@ def unwind(frame):
     )
 
 
-def realign(code: CodeType, recursive: bool = False) -> CodeType:
+def mark_traced(code: CodeType, recursive: bool = False) -> CodeType:
     if code in _TRACED_CODE:
         return code
 
-    bytecode = ConcreteBytecode.from_code(code)
-
-    for n, i in enumerate((_ for _ in bytecode if isinstance(_, Instr))):
-        i._lineno = i.lineno
-        i.lineno = n + 1
-
     if recursive:
-        for i, o in enumerate(bytecode.consts):
+        for o in code.co_consts:
             if isinstance(o, CodeType):
-                bytecode.consts[i] = realign(o)
+                mark_traced(o)
 
     _TRACED_CODE[code] = list(code.co_lines())
-    return bytecode.to_code()
 
 
 runpy_run_code = runpy._run_code
 
 
 def _run_code(code, *args, **kwargs):
-    for o in code.co_consts:
-        if isinstance(o, FunctionType):
-            o.__code__ = realign(o.__code__)
-    runpy_run_code(realign(code, recursive=True), *args, **kwargs)
+    mark_traced(code, recursive=True)
+    runpy_run_code(code, *args, **kwargs)
 
 
 runpy._run_code = _run_code
@@ -62,7 +52,9 @@ atexit.register(lambda: setattr(runpy, "_run_code", runpy_run_code))
 
 
 def tracer(frame, event, arg):
-    if event not in {"line", "return"} or frame.f_code not in _TRACED_CODE:
+    frame.f_trace_opcodes = True
+
+    if event not in {"opcode", "return"} or frame.f_code not in _TRACED_CODE:
         return tracer
 
     code = frame.f_code
